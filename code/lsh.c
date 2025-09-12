@@ -28,7 +28,14 @@
 #include <unistd.h>
 
 #include "parse.h"
+#include <sys/types.h>
 
+#define BUFFER_SIZE 25
+#define READ_END 0
+#define WRITE_END 1
+
+
+void print_date();
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
 void stripwhite(char *);
@@ -47,13 +54,57 @@ int main(void)
     if (*line)
     {
       add_history(line);
-
       Command cmd;
+
       if (parse(line, &cmd) == 1)
       {
-        // Just prints cmd
         print_cmd(&cmd);
-      }
+        int fd[2];
+
+        if (cmd.pgm->next != NULL){
+          printf("DET FINNS FLERA\n");  
+          if (pipe(fd) == -1) {
+            fprintf(stderr,"Pipe failed");
+            return 1;
+          }
+          
+          pid_t pid;
+          pid = fork();
+          
+          if (pid < 0){
+            printf("FORK ERROR\n"); 
+          } else if(pid == 0){
+            close(fd[1]);
+            dup(fd[READ_END]); 
+            execvp(cmd.pgm->pgmlist[1],cmd.pgm->pgmlist);
+            close(fd[0]);
+          } else {
+            close(fd[READ_END]);
+            dup2(STDOUT_FILENO,fd[WRITE_END]);
+            execvp(cmd.pgm->pgmlist[0],cmd.pgm->pgmlist);
+            close(fd[WRITE_END]);
+            wait(NULL);
+            printf("BARNET ÄR KLART\n");
+          }
+        } else {
+          printf("Det finns bara en\n");
+          pid_t pid;
+          pid = fork();
+          
+          if (pid < 0){
+            printf("FORK ERROR\n"); 
+          } else if(pid == 0){
+            execvp(cmd.pgm->pgmlist[0],cmd.pgm->pgmlist);
+          } else {
+            if(!cmd.background){
+              wait(NULL);
+              printf("BARNET ÄR KLART\n");
+            } else {
+              printf("BAKGRUND PROCESS\n");
+            }
+          }
+        }
+      }  
       else
       {
         printf("Parse ERROR\n");
@@ -66,7 +117,6 @@ int main(void)
 
   return 0;
 }
-
 /*
  * Print a Command structure as returned by parse on stdout.
  *
