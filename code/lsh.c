@@ -29,13 +29,15 @@
 
 #include "parse.h"
 #include <sys/types.h>
+#include <fcntl.h>
 
 #define BUFFER_SIZE 25
 #define READ_END 0
 #define WRITE_END 1
 
 
-void print_date();
+static void Change_in(Command *cmd_list);
+static void Change_out(Command *cmd_list);
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
 void stripwhite(char *);
@@ -62,43 +64,58 @@ int main(void)
         int fd[2];
 
         if (cmd.pgm->next != NULL){
-          printf("DET FINNS FLERA\n");  
           if (pipe(fd) == -1) {
             fprintf(stderr,"Pipe failed");
             return 1;
           }
           
-          pid_t pid;
-          pid = fork();
-          
-          if (pid < 0){
+          pid_t pid1 ,pid2;
+          pid1 = fork();
+          //Change_in_out(&cmd,fd);
+          if (pid1 < 0){
             printf("FORK ERROR\n"); 
-          } else if(pid == 0){
-            close(fd[1]);
-            dup(fd[READ_END]); 
-            execvp(cmd.pgm->pgmlist[1],cmd.pgm->pgmlist);
-            close(fd[0]);
-          } else {
+          } else if(pid1 == 0){ //Child process 1 - SKA SKRIVA
             close(fd[READ_END]);
-            dup2(STDOUT_FILENO,fd[WRITE_END]);
-            execvp(cmd.pgm->pgmlist[0],cmd.pgm->pgmlist);
+            dup2(fd[WRITE_END],STDOUT_FILENO); 
             close(fd[WRITE_END]);
-            wait(NULL);
-            printf("BARNET ÄR KLART\n");
-          }
+            Change_in(&cmd);
+            execvp(cmd.pgm->next->pgmlist[0],cmd.pgm->next->pgmlist);
+          } else{
+            pid2 = fork();
+            if (pid2 < 0){
+              printf("FORK ERROR 2\n"); 
+            }
+            else if(pid2 == 0){ //Child process 2 - SKA LÄSA
+              waitpid(pid1, NULL, 0);
+              close(fd[WRITE_END]);
+              dup2(fd[READ_END],STDIN_FILENO);
+              close(fd[READ_END]);
+              Change_out(&cmd);
+              execvp(cmd.pgm->pgmlist[0], cmd.pgm->pgmlist);
+            } else {
+              close(fd[READ_END]);
+              close(fd[WRITE_END]);
+              wait(NULL);
+            }
+            
+          } 
         } else {
-          printf("Det finns bara en\n");
           pid_t pid;
           pid = fork();
           
           if (pid < 0){
-            printf("FORK ERROR\n"); 
-          } else if(pid == 0){
-            execvp(cmd.pgm->pgmlist[0],cmd.pgm->pgmlist);
-          } else {
+            printf("FORK ERROR\n");
+          }
+          else if (pid == 0)
+          {
+            Change_in(&cmd);
+            Change_out(&cmd);
+            execvp(cmd.pgm->pgmlist[0], cmd.pgm->pgmlist);            
+          }
+          else
+          {
             if(!cmd.background){
               wait(NULL);
-              printf("BARNET ÄR KLART\n");
             } else {
               printf("BAKGRUND PROCESS\n");
             }
@@ -117,6 +134,33 @@ int main(void)
 
   return 0;
 }
+
+static void Change_in( Command *cmd_list) { //Changes input to file if '<'
+    if (cmd_list->rstdin) {
+        int file_fd = open(cmd_list->rstdin, O_RDONLY);
+        if (file_fd < 0) {
+            perror("open stdin");
+            exit(1);
+        }
+        dup2(file_fd, STDIN_FILENO);
+        close(file_fd);
+    }
+}
+
+static void Change_out( Command *cmd_list){ //Changes output to file if '>'
+    if (cmd_list->rstdout)
+    {
+      int file_fd = open(cmd_list->rstdout, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      if (file_fd < 0)
+      {
+        perror("open");
+        exit(1);
+      }
+      dup2(file_fd, STDOUT_FILENO); // redirect stout to read from the file
+      close(file_fd);              // close the original fd
+    }
+}
+
 /*
  * Print a Command structure as returned by parse on stdout.
  *
