@@ -31,15 +31,22 @@
 #include "parse.h"
 #include <sys/types.h>
 #include <fcntl.h>
+#include <sys/wait.h>
+#include <errno.h>
+
 
 #define BUFFER_SIZE 25
 #define READ_END 0
 #define WRITE_END 1
+#define MAX_BG 64
+pid_t bg_children[MAX_BG];
+int bg_count = 0;
 
 static void Change_in(Command *cmd_list);
 static void Change_out(Command *cmd_list);
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
+void sigchld_handler(int signo);
 void close_handler();
 void stripwhite(char *);
 
@@ -48,11 +55,17 @@ static bool run_process = true; // Kills the process when ctrl+c
 int main(void)
 {
   signal(SIGINT, close_handler); // DENNA KALLAR PÅ FUNKTIONEN NÄR MAN TRYCKER CTRL+C
+  signal(SIGCHLD, sigchld_handler); // HANDLER FÖR BAKGRUNDSPROCESSER
   for (;;)
   {
     char *line;
     line = readline("> ");
 
+    if (line == NULL) {
+      // EOF detected (Ctrl+D), exit cleanly
+      printf("\n");
+      exit(0);   
+    }
     // Remove leading and trailing whitespace from the line
     stripwhite(line);
 
@@ -64,7 +77,7 @@ int main(void)
 
       if (parse(line, &cmd) == 1)
       {
-        print_cmd(&cmd);
+        //print_cmd(&cmd);
         int fd[2];
 
         if (cmd.pgm->next != NULL)
@@ -99,7 +112,7 @@ int main(void)
             }
             else if (pid2 == 0)
             { // Child process 2 - SKA LÄSA
-              waitpid(pid1, NULL, 0);
+              // waitpid(pid1, NULL, 0);
               close(fd[WRITE_END]);
               dup2(fd[READ_END], STDIN_FILENO);
               close(fd[READ_END]);
@@ -110,17 +123,18 @@ int main(void)
             {
               close(fd[READ_END]);
               close(fd[WRITE_END]);
-              wait(NULL);
+              waitpid(pid1, NULL, 0);
+              waitpid(pid2, NULL, 0);
             }
           }
         }
         else
         {
-          if (strstr(line, "cd") != NULL) // Chaning directory.
+          if (cmd.pgm->pgmlist[0] && strcmp(cmd.pgm->pgmlist[0], "cd") == 0) // Changing directory.
           {
             if (chdir(cmd.pgm->pgmlist[1]) != 0)
             {
-              perror("Chaning directory failed\n");
+              perror("Changing directory failed\n");
             }
             else
             {
@@ -154,12 +168,15 @@ int main(void)
             {
               if (!cmd.background)
               {
-                wait(NULL);
+                waitpid(pid, NULL, 0);
                 run_process = true;
               }
               else
               {
+                if (bg_count < MAX_BG) {
+                  bg_children[bg_count++] = pid;
                 printf("BAKGRUND PROCESS\n");
+                }
               }
             }
           }
@@ -179,6 +196,24 @@ int main(void)
 void close_handler()
 {
   run_process = false;
+}
+
+void sigchld_handler(int signo) {
+    int saved_errno = errno;
+    int status;
+    pid_t pid;
+
+    for (int i = 0; i < bg_count; i++) {
+        pid = waitpid(bg_children[i], &status, WNOHANG);
+        if (pid > 0) {
+            // Remove reaped child from array
+            bg_children[i] = bg_children[bg_count - 1];
+            bg_count--;
+            i--; // check the swapped-in PID
+        }
+    }
+
+    errno = saved_errno;
 }
 
 static void Change_in(Command *cmd_list)
