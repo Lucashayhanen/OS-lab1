@@ -46,16 +46,20 @@ static void Change_in(Command *cmd_list);
 static void Change_out(Command *cmd_list);
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
-void sigchld_handler(int signo);
+static void execute_piped_command(Command *cmd, struct c *pgm);
+static void execute_command(Command *cmd);
+void signal_handler(int signo);
 void close_handler();
 void stripwhite(char *);
+int count_commands(Pgm *head);
+
 
 static bool run_process = true; // Kills the process when ctrl+c
 
 int main(void)
 {
   signal(SIGINT, close_handler); // DENNA KALLAR PÅ FUNKTIONEN NÄR MAN TRYCKER CTRL+C
-  signal(SIGCHLD, sigchld_handler); // HANDLER FÖR BAKGRUNDSPROCESSER
+  signal(SIGCHLD, signal_handler); // HANDLER FÖR BAKGRUNDSPROCESSER
   for (;;)
   {
     char *line;
@@ -77,59 +81,8 @@ int main(void)
 
       if (parse(line, &cmd) == 1)
       {
-        //print_cmd(&cmd);
-        int fd[2];
+        print_cmd(&cmd);
 
-        if (cmd.pgm->next != NULL)
-        {
-          if (pipe(fd) == -1)
-          {
-            fprintf(stderr, "Pipe failed");
-            return 1;
-          }
-
-          pid_t pid1, pid2;
-          pid1 = fork();
-
-          if (pid1 < 0)
-          {
-            printf("FORK ERROR\n");
-          }
-          else if (pid1 == 0)
-          { // Child process 1 - SKA SKRIVA
-            close(fd[READ_END]);
-            dup2(fd[WRITE_END], STDOUT_FILENO);
-            close(fd[WRITE_END]);
-            Change_in(&cmd);
-            execvp(cmd.pgm->next->pgmlist[0], cmd.pgm->next->pgmlist);
-          }
-          else // Parent process
-          {
-            pid2 = fork();
-            if (pid2 < 0)
-            {
-              printf("FORK ERROR 2\n");
-            }
-            else if (pid2 == 0)
-            { // Child process 2 - SKA LÄSA
-              // waitpid(pid1, NULL, 0);
-              close(fd[WRITE_END]);
-              dup2(fd[READ_END], STDIN_FILENO);
-              close(fd[READ_END]);
-              Change_out(&cmd);
-              execvp(cmd.pgm->pgmlist[0], cmd.pgm->pgmlist);
-            }
-            else
-            {
-              close(fd[READ_END]);
-              close(fd[WRITE_END]);
-              waitpid(pid1, NULL, 0);
-              waitpid(pid2, NULL, 0);
-            }
-          }
-        }
-        else
-        {
           if (cmd.pgm->pgmlist[0] && strcmp(cmd.pgm->pgmlist[0], "cd") == 0) // Changing directory.
           {
             if (chdir(cmd.pgm->pgmlist[1]) != 0)
@@ -141,46 +94,14 @@ int main(void)
               printf("Changed directory\n");
             }
           }
-          else if (strcmp(line, "exit") == 0)
+
+          if (strcmp(line, "exit") == 0)
           {
             exit(0);
           }
-          else
-          {
-            pid_t pid;
-            pid = fork();
 
-            if (pid < 0)
-            {
-              printf("FORK ERROR\n");
-            }
-            else if (pid == 0)
-            {
-              while (run_process)
-              {
-                Change_in(&cmd);
-                Change_out(&cmd);
-                execvp(cmd.pgm->pgmlist[0], cmd.pgm->pgmlist);
-              }
-              _Exit(EXIT_SUCCESS);
-            }
-            else
-            {
-              if (!cmd.background)
-              {
-                waitpid(pid, NULL, 0);
-                run_process = true;
-              }
-              else
-              {
-                if (bg_count < MAX_BG) {
-                  bg_children[bg_count++] = pid;
-                printf("BAKGRUND PROCESS\n");
-                }
-              }
-            }
-          }
-        }
+          execute_command(&cmd);
+
       }
       else
       {
@@ -198,54 +119,160 @@ void close_handler()
   run_process = false;
 }
 
-void sigchld_handler(int signo) {
-    int saved_errno = errno;
-    int status;
+int count_commands(Pgm *head) {
+    int count = 0;
+    Pgm *current = head;
+    while (current != NULL) {
+        count++;
+        current = current->next;
+    }
+    return count;
+}
+
+void signal_handler(int signo) {
+  if (signo == SIGCHLD) {
     pid_t pid;
-
-    for (int i = 0; i < bg_count; i++) {
-        pid = waitpid(bg_children[i], &status, WNOHANG);
-        if (pid > 0) {
-            // Remove reaped child from array
-            bg_children[i] = bg_children[bg_count - 1];
-            bg_count--;
-            i--; // check the swapped-in PID
+    int status;
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+      for (int i = 0; i < bg_count; i++) {
+        if (bg_children[i] == pid) {
+          printf("\nBackground process %d finished\n", pid);
+          // Remove the finished process from the array
+          bg_children[i] = bg_children[bg_count - 1];
+          bg_count--;
+          break;
         }
+      }
     }
-
-    errno = saved_errno;
+  }
 }
 
+// Changes input to file if '<
 static void Change_in(Command *cmd_list)
-{ // Changes input to file if '<'
-  if (cmd_list->rstdin)
+{
+  int file_fd = open(cmd_list->rstdin, O_RDONLY);
+  if (file_fd < 0)
   {
-    int file_fd = open(cmd_list->rstdin, O_RDONLY);
-    if (file_fd < 0)
-    {
-      perror("open stdin");
-      exit(1);
-    }
-    dup2(file_fd, STDIN_FILENO);
-    close(file_fd);
+    perror("open stdin");
+    exit(1);
   }
+  dup2(file_fd, STDIN_FILENO);// redirect stout to read to the file
+  close(file_fd);              // close the original fd
 }
 
+// Changes output to file if '>'
 static void Change_out(Command *cmd_list)
-{ // Changes output to file if '>'
-  if (cmd_list->rstdout)
+{ 
+  int file_fd = open(cmd_list->rstdout, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (file_fd < 0)
   {
-    int file_fd = open(cmd_list->rstdout, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (file_fd < 0)
+    perror("open");
+    exit(1);
+  }
+  dup2(file_fd, STDOUT_FILENO); // redirect stout to read from the file
+  close(file_fd);               // close the original fd
+}
+
+static void command(Command *cmd)
+{
+  pid_t pid = fork();
+
+  if (pid < 0)
+  {
+    perror("Fork failed");
+    return;
+  }
+  else if (pid == 0)
+  {
+    printf("%d\n", count_commands(cmd->pgm));
+    if (count_commands(cmd->pgm) > 1)
     {
-      perror("open");
-      exit(1);
+      piped_command(cmd, cmd->pgm);
     }
-    dup2(file_fd, STDOUT_FILENO); // redirect stout to read from the file
-    close(file_fd);               // close the original fd
+    else
+    {
+      if (cmd->background)
+      {
+        signal(SIGINT, SIG_IGN);
+      }
+      if (cmd->rstdin)
+      {
+        Change_in(cmd);
+      }
+      if (cmd->rstdout)
+      {
+        Change_out(cmd);
+      }
+      char **args = cmd->pgm->pgmlist;
+      if (execvp(args[0], args) < 0)
+      {
+        exit(EXIT_FAILURE);
+      }
+   }
+  }
+  else
+  {
+    if (!cmd->background)
+    {
+      waitpid(pid, NULL, 0);
+    }
+    else
+    {
+      printf("Started background process with PID: %d\n", pid);
+      
+    }
   }
 }
 
+// creates a fork and a pipe for each command in the piped command and executes them recursivly from the end of the list
+static void piped_command(Command *cmd, struct c *pgm)
+{
+  int fd[2];
+  if (pipe(fd) == -1)
+  {
+    perror("Pipe failed");
+    return;
+  }
+  int pid = fork();
+
+  if (pid < 0)
+  {
+    perror("Fork failed");
+    return;
+  }
+  else if (pid == 0)
+  {
+    close(fd[0]);
+    dup2(fd[1], STDOUT_FILENO);
+    close(fd[1]);
+
+    pgm = pgm->next;
+
+    if (pgm->next == NULL)
+    {
+    char **args = pgm->pgmlist;
+      if (execvp(args[0], args) < 0)
+      {
+        exit(EXIT_FAILURE);
+      }
+    }
+    else if (pgm->next != NULL)
+    {
+      piped_command(cmd, pgm);
+    }
+  }
+  else
+  {
+
+    close(fd[1]);
+    dup2(fd[0], STDIN_FILENO);
+    char **args = pgm->pgmlist;
+    if (execvp(args[0], args) < 0)
+    {
+      exit(EXIT_FAILURE);
+    }
+  }
+}
 /*
  * Print a Command structure as returned by parse on stdout.
  *
