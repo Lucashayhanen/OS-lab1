@@ -49,15 +49,14 @@ static void print_pgm(Pgm *p);
 static void command(Command *cmd);
 static void piped_command(Command *cmd, struct c *pgm);
 void signal_handler(int signo);
-
 void stripwhite(char *);
 int count_commands(Pgm *head);
-
 
 static bool run_process = true; // Kills the process when ctrl+c
 
 int main(void)
 {
+  signal(SIGINT, signal_handler); // DENNA KALLAR PÅ FUNKTIONEN NÄR MAN TRYCKER CTRL+C
   signal(SIGCHLD, signal_handler); // HANDLER FÖR BAKGRUNDSPROCESSER
   for (;;)
   {
@@ -125,19 +124,10 @@ int count_commands(Pgm *head) {
 
 void signal_handler(int signo) {
   if (signo == SIGCHLD) {
-    pid_t pid;
-    int status;
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-      for (int i = 0; i < bg_count; i++) {
-        if (bg_children[i] == pid) {
-          printf("\nBackground process %d finished\n", pid);
-          // Remove the finished process from the array
-          bg_children[i] = bg_children[bg_count - 1];
-          bg_count--;
-          break;
-        }
-      }
-    }
+    waitpid(-1, NULL, WNOHANG);
+  }
+  else if (signo == SIGINT) {
+    fflush(stdout);
   }
 }
 
