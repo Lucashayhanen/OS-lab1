@@ -46,10 +46,10 @@ static void Change_in(Command *cmd_list);
 static void Change_out(Command *cmd_list);
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
-static void execute_piped_command(Command *cmd, struct c *pgm);
-static void execute_command(Command *cmd);
+static void command(Command *cmd);
+static void piped_command(Command *cmd, struct c *pgm);
 void signal_handler(int signo);
-void close_handler();
+
 void stripwhite(char *);
 int count_commands(Pgm *head);
 
@@ -58,7 +58,6 @@ static bool run_process = true; // Kills the process when ctrl+c
 
 int main(void)
 {
-  signal(SIGINT, close_handler); // DENNA KALLAR PÅ FUNKTIONEN NÄR MAN TRYCKER CTRL+C
   signal(SIGCHLD, signal_handler); // HANDLER FÖR BAKGRUNDSPROCESSER
   for (;;)
   {
@@ -100,7 +99,7 @@ int main(void)
             exit(0);
           }
 
-          execute_command(&cmd);
+          command(&cmd);
 
       }
       else
@@ -112,11 +111,6 @@ int main(void)
     free(line);
   }
   return 0;
-}
-
-void close_handler()
-{
-  run_process = false;
 }
 
 int count_commands(Pgm *head) {
